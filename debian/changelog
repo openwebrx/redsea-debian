@@ -1,5 +1,5 @@
-redsea (0.21-1) UNRELEASED; urgency=low
+redsea (0.21-1) jammy; urgency=low
 
   * First build
 
- -- Jakob Ketterl <jakob.ketterl@gmx.de>  Thu, 18 Jan 2024 23:10:00 +0000
+ -- Jakob Ketterl <jakob.ketterl@gmx.de>  Tue, 13 Feb 2024 14:49:00 +0000
