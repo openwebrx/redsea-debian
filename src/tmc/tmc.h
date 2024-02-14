@@ -200,10 +200,10 @@ class TMCService {
   bool is_initialized_   { false };
   bool is_encrypted_     { false };
   bool has_encid_        { false };
-  bool is_enhanced_mode_ { false };
   uint16_t ltn_          { 0 };
   uint16_t sid_          { 0 };
   uint16_t encid_        { 0 };
+  int      ltcc_         { -1 };
   Message message_;
   std::map<uint16_t, ServiceKey> service_key_table_;
   RDSString ps_;

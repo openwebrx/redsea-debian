@@ -82,11 +82,12 @@ be disabled (`./configure --disable-tmc`).
 If you only need to decode hex or binary input and don't need demodulation,
 you can compile redsea without liquid-dsp (`./configure --without-liquid`).
 
-[liquid-dsp]: https://github.com/jgaeddert/liquid-dsp
+[liquid-dsp]: https://github.com/jgaeddert/liquid-dsp/releases/tag/v1.3.2
 
 ## Usage
 
-By default, a 171 kHz single-channel 16-bit MPX signal is expected via stdin.
+By default, an MPX signal is expected via stdin (raw 16-bit signed-integer PCM
+sampled at 171 kHz).
 
 The simplest way to view RDS groups using `rtl_fm` is:
 
@@ -101,11 +102,7 @@ Please refer to the [wiki][Wiki: Use cases] for more details and usage examples.
 
 ```
 radio_command | redsea [OPTIONS]
-redsea -f WAVFILE
-
--b, --input-bits       Input is an unsynchronized ASCII bit stream
-                       (011010110...). All characters but '0' and '1'
-                       are ignored.
+redsea -f WAVEFILE
 
 -c, --channels CHANS   Number of channels in the raw input signal. Each
                        channel is demodulated independently.
@@ -122,7 +119,12 @@ redsea -f WAVFILE
 -f, --file FILENAME    Use an audio file as MPX input. All formats
                        readable by libsndfile should work.
 
--h, --input-hex        The input is in the RDS Spy hex format.
+-i, --input FORMAT     Decode stdin as FORMAT (see the wiki for more info):
+                        bits Unsynchronized ASCII bit stream (011010110...).
+                             All characters but '0' and '1' are ignored.
+                        hex  RDS Spy hex format.
+                        mpx  Mono S16LE PCM-encoded MPX waveform (default).
+                        tef  Serial data from the TEF6686 tuner.
 
 -l, --loctable DIR     Load TMC location table from a directory in TMC
                        Exchange format. This option can be specified
@@ -133,7 +135,7 @@ redsea -f WAVFILE
                        frequencies). partial_ will be prepended to their
                        names. This is good for noisy conditions.
 
--r, --samplerate RATE  Set sample frequency of the raw input signal in Hz.
+-r, --samplerate RATE  Set sample frequency of the raw MPX input signal in Hz.
                        Will resample (slow) if this differs from 171000 Hz.
 
 -R, --show-raw         Show raw group data as hex in the JSON stream.
@@ -173,9 +175,9 @@ type:
 * ~8 MB of free memory (~128 MB for RDS-TMC)
 * C++14 compiler
 * GNU autotools
-* libiconv
-* libsndfile
-* [liquid-dsp][liquid-dsp]
+* libiconv 1.16
+* libsndfile 1.0.31
+* [liquid-dsp][liquid-dsp] release 1.3.2
 * `rtl_fm` (from [rtl-sdr](http://sdr.osmocom.org/trac/wiki/rtl-sdr)) or any
    other source that can output demodulated FM multiplex signals
 
@@ -211,3 +213,6 @@ Redsea is released under the MIT license, which means it is copyrighted to Oona
 Räisänen OH2EIQ yet you're free to use it provided that the copyright
 information is not removed. (jsoncpp and iconvpp have their own licenses.)
 See LICENSE.
+
+This software should never be relied on for emergency communication, accurate
+traffic / weather information, or when your life is on the line.

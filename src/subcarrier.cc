@@ -36,7 +36,6 @@ namespace redsea {
 namespace {
 
 constexpr float kCarrierFrequency_Hz  = 57000.0f;
-constexpr float kBitsPerSecond        = 1187.5f;
 constexpr int   kSamplesPerSymbol     = 3;
 constexpr float kAGCBandwidth_Hz      = 500.0f;
 constexpr float kAGCInitialGain       = 0.08f;
@@ -44,7 +43,7 @@ constexpr float kLowpassCutoff_Hz     = 2400.0f;
 constexpr float kSymsyncBandwidth_Hz  = 2200.0f;
 constexpr int   kSymsyncDelay         = 3;
 constexpr float kSymsyncBeta          = 0.8f;
-constexpr float kPLLBandwidth_Hz      = 0.01f;
+constexpr float kPLLBandwidth_Hz      = 0.03f;
 constexpr float kPLLMultiplier        = 12.0f;
 
 constexpr float hertz2step(float Hz) {
@@ -56,18 +55,19 @@ constexpr float hertz2step(float Hz) {
 BiphaseDecoder::BiphaseDecoder() : clock_history_(128) {
 }
 
-// At correct clock phase, return binary symbol in
+// At correct clock phase, evaluate symbol in
 // constellation {-1,0} => 0, {1,0} => 1
-Maybe<std::complex<float>> BiphaseDecoder::push(
+Maybe<bool> BiphaseDecoder::push(
     std::complex<float> psk_symbol) {
 
-  Maybe<std::complex<float>> result;
+  Maybe<bool> result;
 
-  result.data = (psk_symbol - prev_psk_symbol_) * 0.5f;
+  auto biphase_symbol = (psk_symbol - prev_psk_symbol_) * 0.5f;
+  result.data = biphase_symbol.real() >= 0.0f;
   result.valid = (clock_ % 2 == clock_polarity_);
   prev_psk_symbol_ = psk_symbol;
 
-  clock_history_[clock_] = std::fabs(result.data.real());
+  clock_history_[clock_] = std::fabs(biphase_symbol.real());
   clock_++;
 
   // Periodically evaluate validity of the chosen biphase clock polarity
@@ -112,6 +112,12 @@ Subcarrier::Subcarrier(const Options& options) :
   oscillator_.setPLLBandwidth(kPLLBandwidth_Hz / kTargetSampleRate_Hz);
 }
 
+void Subcarrier::reset() {
+  symsync_.reset();
+  oscillator_.reset();
+  sample_num_ = 0;
+}
+
 /** MPX to bits
  */
 BitBuffer Subcarrier::processChunk(MPXBuffer<>& chunk) {
@@ -152,14 +158,16 @@ BitBuffer Subcarrier::processChunk(MPXBuffer<>& chunk) {
       if (symbol.valid) {
         // Modem here is only used to track PLL phase error
         modem_.demodulate(symbol.data);
-        oscillator_.stepPLL(modem_.getPhaseError() * kPLLMultiplier);
+
+        float phase_error = std::min(std::max(modem_.getPhaseError(),
+                            -float(M_PI)), float(M_PI));
+        oscillator_.stepPLL(phase_error * kPLLMultiplier);
 
         auto biphase = biphase_decoder_.push(symbol.data);
 
         // One biphase symbol received for every 2 PSK symbols
         if (biphase.valid) {
-          bitbuffer.bits.push_back(delta_decoder_.decode(
-                                   biphase.data.real() >= 0.0f));
+          bitbuffer.bits.push_back(delta_decoder_.decode(biphase.data));
         }
       }
     }
@@ -174,6 +182,10 @@ BitBuffer Subcarrier::processChunk(MPXBuffer<>& chunk) {
 
 bool Subcarrier::eof() const {
   return is_eof_;
+}
+
+float Subcarrier::getSecondsSinceLastReset() const {
+  return sample_num_ / kTargetSampleRate_Hz;
 }
 
 }  // namespace redsea

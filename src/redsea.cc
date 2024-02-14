@@ -32,12 +32,7 @@ void printUsage() {
     "radio_command | redsea [OPTIONS]\n"
     "redsea [OPTIONS] < raw_signal_file.s16\n"
     "\n"
-    "By default, a 171 kHz single-channel 16-bit MPX signal is expected via\n"
-    "stdin.\n"
-    "\n"
-    "-b, --input-bits       Input is an unsynchronized ASCII bit stream\n"
-    "                       (011010110...). All characters but '0' and '1'\n"
-    "                       are ignored.\n"
+    "By default, an MPX signal (raw mono S16LE PCM sampled at 171 kHz) is expected via stdin.\n"
     "\n"
     "-c, --channels CHANS   Number of channels in the raw input signal.\n"
     "                       Channels are interleaved streams of samples that\n"
@@ -55,7 +50,12 @@ void printUsage() {
     "-f, --file FILENAME    Use an audio file as MPX input. All formats\n"
     "                       readable by libsndfile should work.\n"
     "\n"
-    "-h, --input-hex        The input is in the RDS Spy hex format.\n"
+    "-i, --input FORMAT     Decode stdin as FORMAT (see the wiki for more info):\n"
+    "                        bits Unsynchronized ASCII bit stream (011010110...).\n"
+    "                             All characters but '0' and '1' are ignored.\n"
+    "                        hex  RDS Spy hex format.\n"
+    "                        mpx  Mono S16LE PCM-encoded MPX waveform (default).\n"
+    "                        tef  Serial data from the TEF6686 tuner.\n"
     "\n"
     "-l, --loctable DIR     Load TMC location table from a directory in TMC\n"
     "                       Exchange format. This option can be specified\n"
@@ -66,7 +66,7 @@ void printUsage() {
     "                       such as PS names, RadioText, and alternative\n"
     "                       frequencies are especially vulnerable. This option\n"
     "                       makes it display them even if not fully received,\n"
-    "                       as partial_{ps,radiotext,alt_kilohertz}.\n"
+    "                       as partial_{ps,radiotext,alt_frequencies}.\n"
     "\n"
     "-r, --samplerate RATE  Set stdin sample frequency in Hz. Will resample\n"
     "                       (slow) if this differs from 171000 Hz.\n"
@@ -133,6 +133,11 @@ int processMPXInput(Options options) {
       channels[i].processBits(
         subcarriers[i]->processChunk(mpx.readChunk(int(i)))
       );
+      if (channels[i].getSecondsSinceCarrierLost() > 10.f &&
+          subcarriers[i]->getSecondsSinceLastReset() > 5.f) {
+        subcarriers[i]->reset();
+        channels[i].resetPI();
+      }
     }
   }
 
@@ -160,6 +165,16 @@ int processHexInput(Options options) {
 
   while (!std::cin.eof()) {
     channel.processGroup(readHexGroup(options));
+  }
+
+  return EXIT_SUCCESS;
+}
+
+int processTEFInput(Options options) {
+  Channel channel(options, 0);
+
+  while (!std::cin.eof()) {
+    channel.processGroup(readTEFGroup(options));
   }
 
   return EXIT_SUCCESS;
@@ -194,6 +209,10 @@ int main(int argc, char** argv) {
 
     case redsea::InputType::Hex:
       return processHexInput(options);
+      break;
+
+    case redsea::InputType::TEF6686:
+      return processTEFInput(options);
       break;
   }
 }

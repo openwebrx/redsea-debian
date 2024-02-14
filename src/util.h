@@ -20,9 +20,9 @@
 #include <cstdint>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <numeric>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -45,8 +45,8 @@ uint32_t getBits(uint16_t word1, uint16_t word2, size_t starting_at) {
 
 std::string getHoursMinutesString(int hour, int minute);
 
-std::string join(std::vector<std::string> strings, const std::string& d);
-std::string join(std::vector<uint16_t> nums, const std::string& d);
+std::string join(const std::vector<std::string>& strings, const std::string& d);
+std::string join(const std::vector<uint16_t>& nums, const std::string& d);
 
 std::string getHexString(uint32_t value, int num_nybbles);
 std::string getPrefixedHexString(uint32_t value, int num_nybbles);
@@ -59,12 +59,12 @@ class CSVTable {
   std::vector<CSVRow> rows;
 };
 
-std::vector<std::vector<std::string>> readCSV(std::vector<std::string> csvdata,
+std::vector<std::vector<std::string>> readCSV(const std::vector<std::string>& csvdata,
                                               char delimiter);
-std::vector<std::vector<std::string>> readCSV(std::string filename,
+std::vector<std::vector<std::string>> readCSV(const std::string& filename,
                                               char delimiter);
-CSVTable readCSVWithTitles(std::string filename, char delimiter);
-CSVTable readCSVWithTitles(std::vector<std::string> csvdata,
+CSVTable readCSVWithTitles(const std::string& filename, char delimiter);
+CSVTable readCSVWithTitles(const std::vector<std::string>& csvdata,
                                       char delimiter);
 
 class CarrierFrequency {
@@ -83,7 +83,7 @@ class CarrierFrequency {
                          const CarrierFrequency &f2);
 
  private:
-  uint16_t code_;
+  uint16_t code_ {};
   Band band_ { Band::FM };
 };
 
@@ -92,13 +92,15 @@ class AltFreqList {
   AltFreqList() = default;
   void insert(uint16_t af_code);
   bool isComplete() const;
-  std::set<CarrierFrequency> get() const;
+  bool isMethodB() const;
+  std::vector<int> getRawList() const;
   void clear();
 
  private:
-  std::set<CarrierFrequency> alt_freqs_;
-  unsigned num_alt_freqs_ { 0 };
-  bool lf_mf_follows_     { false };
+  std::array<int, 25> alt_freqs_;
+  size_t num_expected_ { 0 };
+  size_t num_received_ { 0 };
+  bool lf_mf_follows_  { false };
 };
 
 template<typename T, size_t N>

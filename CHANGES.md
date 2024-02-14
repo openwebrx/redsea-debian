@@ -1,5 +1,27 @@
 # redsea changelog
 
+## 0.21 (2024-01-26)
+
+* Add support for decoding LTCC and LTECC in TMC (#80)
+* Add support for decoding RDS output from the TEF6686 tuner (#89)
+* Add support for Alternative Frequencies Method B (#88)
+* Breaking: Change the name of the field `alt_kilohertz` to either
+  `alt_frequencies_a` or `alt_frequencies_b`. The type of data sent by these
+  methods differs. When `--show-partial` is set, the AF list will be in
+  `partial_alt_frequencies` regardless of method.
+* Add option `--input` / `-i` to specify the stdin input format (bits, hex,
+  mpx, tef). The old options will still work.
+* Fix automake script on Windows (#81)
+* Fix compatibility with current liquid-dsp (#78)
+* Fix output for UTF-8 encoded TMC location tables (#82)
+* Fix `clock_time` displaying wrong date around midnight (#83)
+* Fix misinterpretation of the Decoder Identification bits (#87)
+* Fix decoding of RadioText for stations that don't use string terminators
+  (#77)
+* Fix an off-by-one bug in the RadioText decoder that sometimes caused missing
+  characters at the end of messages
+* Fix runaway PLL after digital silence by clamping the phase error (#94)
+
 ## 0.20 (2021-03-08)
 
 * Recognize more ODAs and features - thanks Andreas Mikula

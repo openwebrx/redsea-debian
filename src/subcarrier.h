@@ -37,7 +37,7 @@ class BiphaseDecoder {
  public:
   BiphaseDecoder();
   ~BiphaseDecoder() = default;
-  Maybe<std::complex<float>> push(std::complex<float> psk_symbol);
+  Maybe<bool> push(std::complex<float> psk_symbol);
 
  private:
   std::complex<float> prev_psk_symbol_ { 0.0f, 0.0f };
@@ -62,6 +62,8 @@ class Subcarrier {
   ~Subcarrier() = default;
   bool eof() const;
   BitBuffer processChunk(MPXBuffer<>& chunk);
+  void reset();
+  float getSecondsSinceLastReset() const;
 
  private:
   int sample_num_ { 0 };

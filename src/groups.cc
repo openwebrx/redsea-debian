@@ -17,10 +17,12 @@
 #include "src/groups.h"
 
 #include <cmath>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <numeric>
+#include <set>
 #include <string>
 #include <sstream>
 #include <vector>
@@ -103,6 +105,7 @@ bool Group::isEmpty() const {
   return !(has(BLOCK1) || has(BLOCK2) || has(BLOCK3) || has(BLOCK4));
 }
 
+// Remember to check if hasPI()
 uint16_t Group::getPI() const {
   if (blocks_[BLOCK1].is_received)
     return blocks_[BLOCK1].data;
@@ -217,20 +220,24 @@ void Group::printHex(std::ostream* stream) const {
 Station::Station() : Station(0x0000, Options(), 0) {
 }
 
-Station::Station(uint16_t _pi, const Options& options, int which_channel) :
-  pi_(_pi), options_(options), which_channel_(which_channel)
+Station::Station(uint16_t _pi, const Options& options, int which_channel, bool has_pi) :
+  pi_(_pi), has_pi_(has_pi), options_(options), which_channel_(which_channel)
 #ifdef ENABLE_TMC
                     , tmc_(options)
 #endif
 {
   writer_builder_["indentation"] = "";
   writer_builder_["precision"] = 7;
+  writer_builder_.settings_["emitUTF8"] = true;
   writer_ =
       std::unique_ptr<Json::StreamWriter>(writer_builder_.newStreamWriter());
 }
 
 void Station::updateAndPrint(const Group& group, std::ostream* stream) {
-  // Allow 1 group with missed PI
+  if (!has_pi_)
+    return;
+
+  // Allow 1 group with missed PI. For subsequent misses, don't process at all.
   if (group.hasPI())
     last_group_had_pi_ = true;
   else if (last_group_had_pi_)
@@ -372,34 +379,92 @@ void Station::decodeBasics(const Group& group) {
 
 // Group 0: Basic tuning and switching information
 void Station::decodeType0(const Group& group) {
+  // Block 2: Flags
   uint16_t segment_address = getBits<2>(group.getBlock2(), 0);
   bool is_di = getBits<1>(group.getBlock2(), 2);
   json_["di"][getDICodeString(segment_address)] = is_di;
-
   json_["ta"]       = static_cast<bool>(getBits<1>(group.getBlock2(), 4));
   json_["is_music"] = static_cast<bool>(getBits<1>(group.getBlock2(), 3));
 
-  if (!group.has(BLOCK3))
+  if (!group.has(BLOCK3)) {
+    // Reset a Method B list to prevent mixing up different lists
+    if (alt_freq_list_.isMethodB())
+      alt_freq_list_.clear();
     return;
+  }
 
+  // Block 3: Alternative frequencies
   if (group.getType().version == GroupType::Version::A) {
     alt_freq_list_.insert(getBits<8>(group.getBlock3(), 8));
     alt_freq_list_.insert(getBits<8>(group.getBlock3(), 0));
 
     if (alt_freq_list_.isComplete()) {
-      for (CarrierFrequency f : alt_freq_list_.get())
-        json_["alt_kilohertz"].append(f.kHz());
+      auto raw_frequencies = alt_freq_list_.getRawList();
+
+      // AF Method B sends longer lists with possible regional variants
+      if (alt_freq_list_.isMethodB()) {
+        int tuned_frequency = raw_frequencies[0];
+
+        // We use std::sets for detecting duplicates
+        std::set<int> unique_alternative_frequencies;
+        std::set<int> unique_regional_variants;
+        std::vector<int> alternative_frequencies;
+        std::vector<int> regional_variants;
+
+        // Frequency pairs
+        for (size_t i = 1; i < raw_frequencies.size(); i += 2) {
+          int freq1 = raw_frequencies[i];
+          int freq2 = raw_frequencies[i + 1];
+
+          int non_tuned_frequency = (freq1 == tuned_frequency ? freq2 : freq1);
+
+          // "General case"
+          if (freq1 < freq2) {
+            alternative_frequencies.push_back(non_tuned_frequency);
+            unique_alternative_frequencies.insert(non_tuned_frequency);
+
+          // "Special case": Non-tuned frequency is a regional variant
+          } else {
+            regional_variants.push_back(non_tuned_frequency);
+            unique_regional_variants.insert(non_tuned_frequency);
+          }
+        }
+
+        // In noisy conditions we may miss a lot of 0A groups. This check catches
+        // the case where there's multiple copies of some frequencies.
+        const size_t expected_number_of_afs = raw_frequencies.size() / 2;
+        const size_t number_of_unique_afs = unique_alternative_frequencies.size() +
+                     unique_regional_variants.size();
+        if (number_of_unique_afs == expected_number_of_afs) {
+          json_["alt_frequencies_b"]["*SORT01*tuned_frequency"] = tuned_frequency;
+
+          for (int frequency : alternative_frequencies)
+            json_["alt_frequencies_b"]["*SORT02*same_programme"].append(frequency);
+
+          for (int frequency : regional_variants)
+            json_["alt_frequencies_b"]["*SORT03*regional_variants"].append(frequency);
+      }
+
+      // AF Method A is a simple list
+      } else {
+        for (int frequency : raw_frequencies)
+          json_["alt_frequencies_a"].append(frequency);
+      }
+
       alt_freq_list_.clear();
 
+    // If partial list is requested we'll print the raw list and not attempt to
+    // deduce whether it's Method A or B
     } else if (options_.show_partial) {
-      for (CarrierFrequency f : alt_freq_list_.get())
-        json_["partial_alt_kilohertz"].append(f.kHz());
+      for (int f : alt_freq_list_.getRawList())
+        json_["partial_alt_frequencies"].append(f);
     }
   }
 
   if (!group.has(BLOCK4))
     return;
 
+  // Block 4: Program Service Name
   ps_.update(segment_address * 2,
              RDSChar(getBits<8>(group.getBlock4(), 8)),
              RDSChar(getBits<8>(group.getBlock4(), 0)));
@@ -445,7 +510,7 @@ void Station::decodeType1(const Group& group) {
 
         if (ecc_ != 0x00) {
           has_country_ = true;
-          json_["country"] = getCountryString(pi_, ecc_);
+          json_["country"] = getCountryString(cc_, ecc_);
         }
         break;
 
@@ -482,14 +547,45 @@ void Station::decodeType1(const Group& group) {
 }
 
 // Group 2: RadioText
+// Regarding the length of the message, at least three different practices are seen in the wild:
+//   Case (1): The end of the message is marked with a string terminator (0x0D). It's simple to
+//             convert this to a string.
+//   Case (2): The message is always 64 characters long, and is padded with blank spaces. Simple
+//             to decode, and we can remove the spaces.
+//   Case (3): There is no string terminator and the message is of random length. Harder to decode
+//             reliably in noisy conditions.
 void Station::decodeType2(const Group& group) {
   if (!(group.has(BLOCK3) && group.has(BLOCK4)))
     return;
 
-  size_t radiotext_position = getBits<4>(group.getBlock2(), 0) *
+  const size_t radiotext_position = getBits<4>(group.getBlock2(), 0) *
     (group.getType().version == GroupType::Version::A ? 4 : 2);
 
-  if (radiotext_.isABChanged(getBits<1>(group.getBlock2(), 4)))
+  const bool is_ab_changed = radiotext_.isABChanged(getBits<1>(group.getBlock2(), 4));
+
+  // If these heuristics match it's possible that we just received a full random-length message
+  // with no string terminator (method 3 above).
+  std::string potentially_complete_message;
+  bool has_potentially_complete_message =
+    radiotext_position == 0 &&
+    radiotext_.text.getReceivedLength() > 1 &&
+    not radiotext_.text.isComplete() &&
+    not radiotext_.text.hasPreviouslyReceivedTerminators();
+
+  if (has_potentially_complete_message) {
+    potentially_complete_message = rtrim(radiotext_.text.str());
+
+    // No, perhaps we just lost the terminator in noise [could we use the actual BLER figure?],
+    // or maybe the message got interrupted by an A/B change. Let's wait for a repeat.
+    if (potentially_complete_message != radiotext_.previous_potentially_complete_message) {
+      has_potentially_complete_message = false;
+    }
+    radiotext_.previous_potentially_complete_message = potentially_complete_message;
+  }
+
+  // The transmitter requests us to clear the buffer (message contents will change).
+  // Note: This is sometimes overused in the wild.
+  if (is_ab_changed)
     radiotext_.text.clear();
 
   if (group.getType().version == GroupType::Version::A) {
@@ -508,10 +604,18 @@ void Station::decodeType2(const Group& group) {
                       RDSChar(getBits<8>(group.getBlock4(), 0)));
   }
 
-  if (radiotext_.text.isComplete())
+  // Transmitter used Method 1 or 2 convey the length of the string.
+  if (radiotext_.text.isComplete()) {
     json_["*SORT04*radiotext"] = rtrim(radiotext_.text.getLastCompleteString());
-  else if (options_.show_partial && rtrim(radiotext_.text.str()).length() > 0)
-    json_["*SORT04*partial_radiotext"] = rtrim(radiotext_.text.str());
+
+  // Method 3 was used instead (and was confirmed by a repeat).
+  } else if (has_potentially_complete_message) {
+    json_["*SORT04*radiotext"] = rtrim(potentially_complete_message);
+
+  // The string is not complete yet, but user wants to see it anyway.
+  } else if (options_.show_partial && rtrim(radiotext_.text.str()).length() > 0) {
+    json_["*SORT04*partial_radiotext"] = radiotext_.text.str();
+  }
 }
 
 // Group 3A: Application identification for Open Data
@@ -566,42 +670,53 @@ void Station::decodeType4A(const Group& group) {
     return;
 
   uint32_t modified_julian_date = getBits<17>(group.getBlock2(), group.getBlock3(), 1);
+
+  int year_utc  = int((modified_julian_date - 15078.2) / 365.25);
+  int month_utc = int((modified_julian_date - 14956.1 -
+                std::trunc(year_utc * 365.25)) / 30.6001);
+  int day_utc   = int(modified_julian_date - 14956 - std::trunc(year_utc * 365.25) -
+                std::trunc(month_utc * 30.6001));
+  if (month_utc == 14 || month_utc == 15) {
+    year_utc += 1;
+    month_utc -= 12;
+  }
+  year_utc += 1900;
+  month_utc -= 1;
+
+  int hour_utc   = getBits<5>(group.getBlock3(), group.getBlock4(), 12);
+  int minute_utc = getBits<6>(group.getBlock4(), 6);
+
   double local_offset = (getBits<1>(group.getBlock4(), 5) ? -1 : 1) *
                          getBits<5>(group.getBlock4(), 0) / 2.0;
-  modified_julian_date += local_offset / 24.0;
 
-  int year  = int((modified_julian_date - 15078.2) / 365.25);
-  int month = int((modified_julian_date - 14956.1 -
-                std::trunc(year * 365.25)) / 30.6001);
-  int day   = int(modified_julian_date - 14956 - std::trunc(year * 365.25) -
-                std::trunc(month * 30.6001));
-  if (month == 14 || month == 15) {
-    year += 1;
-    month -= 12;
-  }
-  year += 1900;
-  month -= 1;
+  struct tm utc_plus_offset_tm;
+  utc_plus_offset_tm.tm_year  = year_utc - 1900;
+  utc_plus_offset_tm.tm_mon   = month_utc - 1;
+  utc_plus_offset_tm.tm_mday  = day_utc;
+  utc_plus_offset_tm.tm_isdst = -1;
+  utc_plus_offset_tm.tm_hour  = hour_utc;
+  utc_plus_offset_tm.tm_min   = minute_utc;
+  utc_plus_offset_tm.tm_sec   = static_cast<int>(local_offset * 3600);
 
-  int local_offset_min = int((local_offset - std::trunc(local_offset)) * 60.0);
+  time_t local_t      = mktime(&utc_plus_offset_tm);
+  struct tm* local_tm = localtime(&local_t);
 
-  int hour = static_cast<int>(getBits<5>(group.getBlock3(), group.getBlock4(), 12) +
-                              + local_offset) % 24;
-  int minute = getBits<6>(group.getBlock4(), 6) + local_offset_min;
-
-  bool is_date_valid = (month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
-                        hour >= 0 && hour <= 23 && minute >= 0 &&
-                        minute <= 59 && fabs(std::trunc(local_offset)) <= 14.0);
+  bool is_date_valid = hour_utc <= 23 && minute_utc <= 59 &&
+                       fabs(std::trunc(local_offset)) <= 14.0;
   if (is_date_valid) {
     char buffer[100];
     int local_offset_hour = int(fabs(std::trunc(local_offset)));
+    int local_offset_min  = int((local_offset - std::trunc(local_offset)) * 60.0);
 
     if (local_offset_hour == 0 && local_offset_min == 0) {
       snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:00Z",
-               year, month, day, hour, minute);
+               local_tm->tm_year + 1900, local_tm->tm_mon + 1, local_tm->tm_mday,
+               local_tm->tm_hour, local_tm->tm_min);
     } else {
       snprintf(buffer, sizeof(buffer),
                "%04d-%02d-%02dT%02d:%02d:00%s%02d:%02d",
-               year, month, day, hour, minute, local_offset > 0 ? "+" : "-",
+               local_tm->tm_year + 1900, local_tm->tm_mon + 1, local_tm->tm_mday,
+               local_tm->tm_hour, local_tm->tm_min, local_offset > 0 ? "+" : "-",
                local_offset_hour, abs(local_offset_min));
     }
     clock_time_ = std::string(buffer);
@@ -640,7 +755,7 @@ void Station::decodeType5(const Group& group) {
 
       std::string full_raw;
       for (auto c : full_tdc_.getChars()) {
-        full_raw += getHexString(c.getCode(), 2) + " ";
+        full_raw += getHexString(c.code, 2) + " ";
       }
       json_["transparent_data"]["full_raw"] = full_raw;
     }
@@ -681,11 +796,13 @@ void Station::decodeType6(const Group& group) {
 
 // Group 7A: Radio Paging
 void Station::decodeType7A(const Group& group) {
+  (void)group;
   json_["debug"].append("TODO: 7A");
 }
 
 // Group 9A: Emergency warning systems
 void Station::decodeType9A(const Group& group) {
+  (void)group;
   json_["debug"].append("TODO: 9A");
 }
 
@@ -756,8 +873,8 @@ void Station::decodeType14(const Group& group) {
       eon_alt_freqs_[on_pi].insert(getBits<8>(group.getBlock3(), 0));
 
       if (eon_alt_freqs_[on_pi].isComplete()) {
-        for (CarrierFrequency freq : eon_alt_freqs_[on_pi].get())
-          json_["other_network"]["alt_kilohertz"].append(freq.kHz());
+        for (int freq : eon_alt_freqs_[on_pi].getRawList())
+          json_["other_network"]["alt_frequencies"].append(freq);
         eon_alt_freqs_[on_pi].clear();
       }
       break;

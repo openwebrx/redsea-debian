@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([redsea], [0.20], [oona@kapsi.fi], [redsea],
+AC_INIT([redsea], [0.21], [oona@kapsi.fi], [redsea],
         [https://github.com/windytan/redsea])
 AM_INIT_AUTOMAKE([1.10 -Wall -Werror foreign subdir-objects])
 AC_CONFIG_HEADERS([config.h])
@@ -35,6 +35,11 @@ AS_IF([test "x$with_liquid" != xno],
     [AC_MSG_FAILURE(
        [Could not find liquid-dsp (use --without-liquid to disable)])])])
 
+AS_IF([test "x$with_liquid" != xno],
+  [AC_CHECK_LIB([liquid], [modemcf],
+    [AC_DEFINE([MODEM_IS_MODEMCF], [1],
+               [modem is called modemcf])])])
+
 MACPORTS_LD=
 AS_IF([test "x$with_macports" != xno],
   [AC_CHECK_FILE(/opt/local/lib,
@@ -53,10 +58,29 @@ AC_CHECK_LIB([sndfile], [main],
   [AC_MSG_FAILURE(
      [Could not find libsndfile])])
 
+WIN_CF=
+LIBC=
+
+AC_MSG_CHECKING([whether compiling for Windows])
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+#if !defined(_WIN32) && !defined(_WIN64)
+#error not compiling for Windows
+#endif
+]])], 
+  # Windows
+  [AC_MSG_RESULT([yes]); AC_SUBST([WIN_CF], ["-D_USE_MATH_DEFINES=1"])],
+  # Unix
+  [AC_MSG_RESULT([no]); AC_SUBST([LIBC], ["-lc"])])
+
+CPP_STD=c++14
 AC_CANONICAL_HOST
 case "${host_os}" in
-  darwin*)
+  darwin*|msys*|mingw*)
       AC_SUBST([ICONV], ["-liconv"])
+      ;;
+  cygwin*)
+      AC_SUBST([ICONV], ["-liconv"])
+      AC_SUBST([CPP_STD], ["gnu++14"])
       ;;
 esac
 

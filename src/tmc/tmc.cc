@@ -32,6 +32,7 @@
 #include <json/json.h>
 
 #include "src/common.h"
+#include "src/tables.h"
 #include "src/tmc/event_list.h"
 #include "src/tmc/locationdb.h"
 #include "src/util.h"
@@ -463,7 +464,7 @@ Event getEvent(uint16_t code) {
 TMCService::TMCService(const Options& options) : message_(is_encrypted_),
                        service_key_table_(loadServiceKeyTable()), ps_(8) {
   if (!options.loctable_dirs.empty() && g_location_databases.empty()) {
-    for (std::string loctable_dir : options.loctable_dirs) {
+    for (const std::string& loctable_dir : options.loctable_dirs) {
       uint16_t ltn = readLTN(loctable_dir);
       g_location_databases[ltn] = loadLocationDatabase(loctable_dir);
       if (options.feed_thru)
@@ -494,7 +495,6 @@ void TMCService::receiveSystemGroup(uint16_t message, Json::Value* jsonroot) {
 
     bool     afi = getBits<1>(message, 5);
     uint16_t mgs = getBits<4>(message, 0);
-    is_enhanced_mode_ = getBits<1>(message, 4);
 
     (*jsonroot)["tmc"]["system_info"]["is_on_alt_freqs"] = afi;
 
@@ -508,14 +508,16 @@ void TMCService::receiveSystemGroup(uint16_t message, Json::Value* jsonroot) {
     static const int gap_values[4] = {3, 5, 8, 11};
     (*jsonroot)["tmc"]["system_info"]["gap"] = gap_values[g];
 
-    if (is_enhanced_mode_) {
-      uint16_t t_d = getBits<2>(message, 0);
-      uint16_t t_w = getBits<2>(message, 2);
-      uint16_t t_a = getBits<2>(message, 4);
-
-      (*jsonroot)["tmc"]["system_info"]["delay_time"] = t_d;
-      (*jsonroot)["tmc"]["system_info"]["activity_time"] = 1 << t_a;
-      (*jsonroot)["tmc"]["system_info"]["window_time"] = 1 << t_w;
+    ltcc_ = getBits<4>(message, 0);
+    if (ltcc_ > 0)
+      (*jsonroot)["tmc"]["system_info"]["ltcc"] = ltcc_;
+  } else if (variant == 2) {
+    int ltecc = getBits<8>(message, 0);
+    if (ltecc > 0) {
+      (*jsonroot)["tmc"]["system_info"]["ltecc"] = ltecc;
+      if (ltcc_ > 0) {
+        (*jsonroot)["tmc"]["system_info"]["country"] = getCountryString(ltcc_, ltecc);
+      }
     }
   }
 }
@@ -568,8 +570,8 @@ void TMCService::receiveUserGroup(uint16_t x, uint16_t y, uint16_t z, Json::Valu
            DKULTUR, for example, does not transmit information about the total
            length of the list */
         (*jsonroot)["tmc"]["other_network"]["pi"] = getPrefixedHexString(on_pi, 4);
-        for (CarrierFrequency f : other_network_freqs_.at(on_pi).get())
-          (*jsonroot)["tmc"]["other_network"]["frequencies"].append(f.str());
+        for (int f : other_network_freqs_.at(on_pi).getRawList())
+          (*jsonroot)["tmc"]["other_network"]["frequencies_khz"].append(f);
         other_network_freqs_.clear();
         break;
       }
